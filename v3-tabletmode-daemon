@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""Automatic tablet mode for the Minisforum V3, driven by the folio's own fold report.
+
+The keyboard folio announces its position over raw HID on its own interface:
+
+    02 00 00 40   folded behind the screen
+    02 00 00 08   opened back to laptop position
+
+The kernel maps neither to an input event, so this is invisible to evdev,
+libinput, KWin, udev, GPIO and the EC -- raw HID is the only place it shows up.
+This daemon watches for it and republishes it as a virtual SW_TABLET_MODE switch
+that KWin does understand.
+
+Detaching the keyboard already puts KWin in tablet mode natively, so whenever we
+are not asserting "folded" the virtual switch is destroyed outright rather than
+reporting 0, and native detection stays in charge.
+
+/run/v3-tabletmode/override forces the state: "auto" (default), "on", "off".
+"""
+import fcntl
+import glob
+import os
+import select
+import struct
+import time
+
+RUN_DIR = "/run/v3-tabletmode"
+OVERRIDE = os.path.join(RUN_DIR, "override")
+STATE = os.path.join(RUN_DIR, "state")
+
+FOLIO_HID_ID = "0003:000005AF:0000326A"      # USB 05af:326a keyboard folio
+REPORT_FOLDED = bytes((0x02, 0x00, 0x00, 0x40))
+REPORT_OPENED = bytes((0x02, 0x00, 0x00, 0x08))
+
+UI_SET_EVBIT, UI_SET_SWBIT = 0x40045564, 0x4004556D
+UI_DEV_CREATE, UI_DEV_DESTROY = 0x5501, 0x5502
+UI_DEV_SETUP = 0x405C5503
+EV_SYN, EV_SW, SYN_REPORT, SW_TABLET_MODE = 0x00, 0x05, 0x00, 0x01
+BUS_VIRTUAL = 0x06
+# two 64-bit longs + u16 + u16 + s32 = 24 bytes; "<q" not "<l" (standard sizes)
+EV_FMT = "<qqHHi"
+
+
+# ---------------------------------------------------------------- uinput
+
+def create_device():
+    fd = os.open("/dev/uinput", os.O_RDWR)
+    fcntl.ioctl(fd, UI_SET_EVBIT, EV_SW)
+    fcntl.ioctl(fd, UI_SET_SWBIT, SW_TABLET_MODE)
+    fcntl.ioctl(fd, UI_DEV_SETUP,
+                struct.pack("<4H80sI", BUS_VIRTUAL, 0x1d6b, 0x0001, 0x0001,
+                            b"V3 Tablet Mode Switch", 0))
+    fcntl.ioctl(fd, UI_DEV_CREATE)
+    return fd
+
+
+def emit(fd, value):
+    now = time.time()
+    sec, usec = int(now), int((now % 1) * 1e6)
+    os.write(fd, struct.pack(EV_FMT, sec, usec, EV_SW, SW_TABLET_MODE, value))
+    os.write(fd, struct.pack(EV_FMT, sec, usec, EV_SYN, SYN_REPORT, 0))
+
+
+# ---------------------------------------------------------------- hidraw
+
+def folio_nodes():
+    """Every hidraw node belonging to the keyboard folio."""
+    found = []
+    for path in sorted(glob.glob("/dev/hidraw*")):
+        node = os.path.basename(path)
+        try:
+            with open(f"/sys/class/hidraw/{node}/device/uevent") as f:
+                if any(ln.strip() == f"HID_ID={FOLIO_HID_ID}" for ln in f):
+                    found.append(path)
+        except OSError:
+            continue
+    return found
+
+
+def read_override():
+    try:
+        with open(OVERRIDE) as f:
+            val = f.read().strip().lower()
+        return val if val in ("auto", "on", "off") else "auto"
+    except OSError:
+        return "auto"
+
+
+def main():
+    os.makedirs(RUN_DIR, exist_ok=True)
+    os.chmod(RUN_DIR, 0o777)
+    if not os.path.exists(OVERRIDE):
+        with open(OVERRIDE, "w") as f:
+            f.write("auto\n")
+    os.chmod(OVERRIDE, 0o666)
+
+    uinput_fd = None
+    folded = False              # last state reported by the folio
+    applied = None
+    fds = {}
+
+    def publish(want):
+        nonlocal uinput_fd, applied
+        if want == applied:
+            return
+        if want and uinput_fd is None:
+            uinput_fd = create_device()
+            time.sleep(0.3)     # let udev tag it before the event lands
+            emit(uinput_fd, 1)
+        elif not want and uinput_fd is not None:
+            emit(uinput_fd, 0)
+            time.sleep(0.1)
+            fcntl.ioctl(uinput_fd, UI_DEV_DESTROY)
+            os.close(uinput_fd)
+            uinput_fd = None
+        applied = want
+        try:
+            with open(STATE, "w") as f:
+                f.write(f"{'on' if want else 'off'}\n")
+            os.chmod(STATE, 0o644)
+        except OSError:
+            pass
+        print(f"tablet mode -> {'ON' if want else 'OFF'}", flush=True)
+
+    last_scan = 0.0
+    while True:
+        # (re)open the folio's hidraw nodes; they vanish when it is detached
+        if not fds and time.time() - last_scan > 2:
+            last_scan = time.time()
+            for path in folio_nodes():
+                try:
+                    fds[os.open(path, os.O_RDONLY | os.O_NONBLOCK)] = path
+                except OSError:
+                    pass
+            if fds:
+                print(f"watching folio: {sorted(fds.values())}", flush=True)
+
+        if fds:
+            r, _, _ = select.select(list(fds), [], [], 0.5)
+            for fd in r:
+                try:
+                    data = os.read(fd, 64)
+                except OSError:
+                    os.close(fd)
+                    del fds[fd]
+                    folded = False      # folio gone: let native detection rule
+                    print("folio disconnected", flush=True)
+                    continue
+                if data == REPORT_FOLDED:
+                    folded = True
+                    print("folio reports FOLDED", flush=True)
+                elif data == REPORT_OPENED:
+                    folded = False
+                    print("folio reports OPENED", flush=True)
+        else:
+            time.sleep(0.5)
+
+        mode = read_override()
+        publish(True if mode == "on" else False if mode == "off" else folded)
+
+
+if __name__ == "__main__":
+    main()

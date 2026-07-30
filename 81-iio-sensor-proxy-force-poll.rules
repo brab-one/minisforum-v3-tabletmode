@@ -1,0 +1,9 @@
+# Minisforum V3: the LSM6DS3TR-C accelerometer (ACPI SMO8B30) exposes no IIO
+# trigger, because its interrupt line is not described in the firmware's ACPI
+# tables. iio-sensor-proxy prefers its buffered driver, which enables the ring
+# buffer and then blocks forever waiting for samples that can never arrive --
+# so ClaimAccelerometer never returns and KWin never receives an orientation.
+#
+# 80-iio-sensor-proxy.rules tags this device as both "iio-poll-accel" and
+# "iio-buffer-accel". Reassign (=, not +=) to leave only the polling driver.
+SUBSYSTEM=="iio", KERNEL=="iio:device*", ATTR{name}=="lsm6ds3tr-c_accel", ENV{IIO_SENSOR_PROXY_TYPE}="iio-poll-accel"

@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Override automatic fold detection on the Minisforum V3.
+# Normally unnecessary: the folio reports its own fold state.
+OVERRIDE=/run/v3-tabletmode/override
+STATE=/run/v3-tabletmode/state
+
+if [ ! -e "$OVERRIDE" ]; then
+    echo "v3-tabletmode: daemon not running (start v3-tabletmode.service)" >&2
+    exit 1
+fi
+
+case "${1:-toggle}" in
+    on)     echo on   > "$OVERRIDE" ;;
+    off)    echo off  > "$OVERRIDE" ;;
+    auto)   echo auto > "$OVERRIDE" ;;
+    toggle) if [ "$(cat "$OVERRIDE")" = "auto" ]; then echo on > "$OVERRIDE";
+            else echo auto > "$OVERRIDE"; fi ;;
+    status) echo "override: $(cat "$OVERRIDE")"
+            echo "tablet mode: $(cat "$STATE" 2>/dev/null || echo unknown)"
+            exit 0 ;;
+    *)      echo "usage: v3-tabletmode [auto|on|off|toggle|status]" >&2; exit 1 ;;
+esac
+
+sleep 1
+echo "override: $(cat "$OVERRIDE")   tablet mode: $(cat "$STATE" 2>/dev/null || echo unknown)"

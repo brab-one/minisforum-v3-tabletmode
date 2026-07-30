@@ -1,0 +1,30 @@
+post_install() {
+	systemctl daemon-reload
+	echo "
+	Enable the fold-detection daemon:
+
+	    systemctl enable --now v3-tabletmode.service
+
+	Then set Auto-rotate to \"In tablet mode\" in
+	System Settings > Display & Monitor.
+
+	Folding the keyboard behind the screen now enables rotation
+	automatically; opening it disables it again. Detaching the
+	keyboard is handled natively by the compositor.
+	"
+}
+
+post_upgrade() {
+	systemctl daemon-reload
+	if systemctl is-active --quiet v3-tabletmode.service; then
+		systemctl restart v3-tabletmode.service
+	fi
+}
+
+pre_remove() {
+	systemctl disable --now v3-tabletmode.service 2>/dev/null || true
+}
+
+post_remove() {
+	systemctl daemon-reload
+}

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Toggle Tablet Mode
+GenericName=Tablet Mode
+Comment=Override automatic keyboard-fold detection (force tablet mode on/auto)
+Exec=/usr/bin/v3-tabletmode toggle
+Icon=rotation-allowed
+Terminal=false
+Categories=Settings;HardwareSettings;
+Keywords=tablet;rotate;rotation;autorotate;keyboard;fold;

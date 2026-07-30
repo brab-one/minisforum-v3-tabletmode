@@ -1,0 +1,13 @@
+[Unit]
+Description=Automatic tablet mode for Minisforum V3 (keyboard fold detection)
+Documentation=https://github.com/brab-one/minisforum-v3-tabletmode
+After=systemd-udevd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/v3-tabletmode-daemon
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
